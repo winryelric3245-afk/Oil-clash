@@ -1,29 +1,29 @@
-# OAO Gene Clash Discord Bot
+# OAO Gene Clash Bot — v4.1 A/B/C batch import
 
-This repository currently contains the v3 archive. The **Gene Clash v4 Quick Assign** release must be uploaded as `OAO_Gene_Clash_v4_Quick_Assign.zip` before deployment.
+**GitHub update is available.** The v4.1 change is committed as `gene-v4-to-v4.1.patch` along with an upgraded `deploy-gene-v4.sh` installer. The installer downloads the previously uploaded v4 archive, applies the v4.1 changes, tests them, backs up the live roster and .env, and deploys.
 
-## v4 update highlights
-- Gene Clash and Action Points naming
-- Multiple game accounts per Discord member
-- Separate action points, reset availability, and A/B/C march power per game account
-- Roster ordered by available-first, then total march power
-- Quick role assignment: Lair Hitter or Rig Holder
-- Admin-only new week, clear players, and full reset, with confirmation
-- Save players, roles, and march power through new week
+## New batch import
 
-## Safe update on existing DigitalOcean server
+Use Discord `/gene batch` with one account per line:
 
-1. Upload `OAO_Gene_Clash_v4_Quick_Assign.zip` to the **main** branch of this repository and commit.
-2. Connect to the **oao-oil-clash** server console.
-3. Run:
-
-```bash
-cd /opt/oil-clash && git pull --ff-only
-bash /opt/oil-clash/deploy-gene-v4.sh
+```text
+Player Name | Role(s) | March A | March B | March C | Discord ID (optional)
+Winry | Lair Hitter | 45M | 40M | 35M
+LittleBear | Rig Holder | 38M | 32M | 28M
 ```
 
-The script creates a timestamped backup of .env, database data, and old code before replacing the running bot. It uses the existing server path `/opt/oil-clash/bot-files/oil-clash-bot`, preserves the Discord token and database, builds the container, and displays startup logs.
+Existing 1–4-column format still works. Empty A/B/C columns leave previously saved march values unchanged. Multiple game accounts can share the same Discord ID.
 
-**Do not run the deployment until the v4 archive exists in the repository.** Do not upload Discord tokens, `.env`, or your database.
+## Deploy on DigitalOcean (iPhone-friendly)
 
-Local v4 test result: **22 tests passed**. Live Discord deployment not yet verified.
+Open the console for droplet `oao-oil-clash` and paste:
+
+```bash
+cd /opt/oil-clash && git pull --ff-only && bash deploy-gene-v4.sh
+```
+
+The script refuses to deploy if the bot token file, database directory or required files are missing. It verifies the patch and runs unit tests **before** stopping the current bot. It saves a timestamped backup under `/root/`. After deployment, verify `/gene batch` and `/gene roster` in Discord.
+
+Do not put a Discord token, .env file, or roster database in this public repository.
+
+**Status:** GitHub patch and deployment helper committed. The live server has **not** yet been updated or verified.
