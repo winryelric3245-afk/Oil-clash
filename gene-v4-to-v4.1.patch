@@ -1,0 +1,125 @@
+--- a/storage.py
++++ b/storage.py
+@@ -30,42 +30,73 @@
+ 
+ 
+ def parse_player_lines(text: str) -> tuple[list[dict], list[str]]:
+-    """Format: Name | Role A, Role B | Power in M | @mention or Discord ID.
+-
+-    Missing columns allowed, including 'Name' alone.
+-    A Discord mention can be specified in ANY of the optional columns.
++    """Batch import, compatible with the original 1-4 column import.
++
++    New preferred format:
++      Name | Role(s) | March A | March B | March C | Discord ID (optional)
++    Example:
++      Winry | Lair Hitter | 45M | 38.5M | 32M | <@123456789012345678>
++
++    Use blank fields to leave a value unchanged. For lines with 4 or fewer
++    columns, the legacy Name | Role(s) | March A | Discord ID syntax still
++    applies; A/B/C values require 5+ columns.
+     """
+     players: list[dict] = []
+     errors: list[str] = []
++    discord_re = re.compile(r"<@!?(\d{15,22})>|(\d{15,22})")
++    power_re = re.compile(r"(\d+(?:\.\d+)?)m?", re.IGNORECASE)
+     for line_number, raw in enumerate(text.splitlines(), 1):
+         line = raw.strip()
+         if not line or line.startswith("#"):
+             continue
+-        fields = [x.strip() for x in line.split("|")]
+-        if len(fields) > 4:
+-            errors.append(f"Line {line_number}: too many | columns")
++        fields = [chunk.strip() for chunk in line.split("|")]
++        if len(fields) > 6:
++            errors.append(f"Line {line_number}: too many | columns (maximum 6)")
+             continue
+         try:
+             name = normalize_name(fields[0])
+             role_names: list[str] = []
+-            power = None
++            powers = [None, None, None]
+             discord_id = None
+-            for chunk in fields[1:]:
+-                if not chunk:
+-                    continue
+-                matched = re.fullmatch(r"<@!?(\d{15,22})>|(\d{15,22})", chunk)
+-                if matched:
+-                    discord_id = int(matched.group(1) or matched.group(2))
+-                    continue
+-                power_text = chunk.lower().replace(" ", "")
+-                matched_power = re.fullmatch(r"(\d+(?:\.\d+)?)m?", power_text)
+-                if matched_power and ("." in chunk or power_text.endswith("m") or len(fields) >= 3):
+-                    power = float(matched_power.group(1))
++            if len(fields) >= 5:
++                # Explicit A, B, C fields; empty fields mean preserve old values.
++                if fields[1]:
++                    role_names = [normalize_role(r) for r in fields[1].split(",") if r.strip()]
++                for i, value in enumerate(fields[2:5]):
++                    if not value:
++                        continue
++                    match = power_re.fullmatch(value.replace(" ", ""))
++                    if not match:
++                        raise ValueError(f"March {('A', 'B', 'C')[i]} must be a number such as 35M")
++                    power = float(match.group(1))
+                     if not 0 <= power <= 9999:
+-                        raise ValueError("power must be 0–9999M")
+-                    continue
+-                role_names.extend(normalize_role(r) for r in chunk.split(",") if r.strip())
+-            players.append({"name": name, "roles": list(dict.fromkeys(role_names)), "power_m": power, "discord_id": discord_id})
++                        raise ValueError("march power must be 0–9999M")
++                    powers[i] = power
++                if len(fields) == 6 and fields[5]:
++                    match = discord_re.fullmatch(fields[5])
++                    if not match:
++                        raise ValueError("last field must be a Discord mention or numeric ID")
++                    discord_id = int(match.group(1) or match.group(2))
++            else:
++                # Preserve the original flexible name / role / power / ID syntax.
++                for chunk in fields[1:]:
++                    if not chunk:
++                        continue
++                    match = discord_re.fullmatch(chunk)
++                    if match:
++                        discord_id = int(match.group(1) or match.group(2))
++                        continue
++                    match = power_re.fullmatch(chunk.replace(" ", ""))
++                    if match and ("." in chunk or chunk.lower().replace(" ", "").endswith("m") or len(fields) >= 3):
++                        power = float(match.group(1))
++                        if not 0 <= power <= 9999:
++                            raise ValueError("march power must be 0–9999M")
++                        powers[0] = power
++                        continue
++                    role_names.extend(normalize_role(role) for role in chunk.split(",") if role.strip())
++            players.append({"name": name, "roles": list(dict.fromkeys(role_names)),
++                            "power_m": powers[0], "march_b_m": powers[1],
++                            "march_c_m": powers[2], "discord_id": discord_id})
+         except ValueError as exc:
+             errors.append(f"Line {line_number}: {exc}")
+     return players, errors
+@@ -418,6 +449,8 @@
+         for rec in records:
+             try:
+                 self.upsert_player(guild_id, rec["name"], rec.get("discord_id"), rec.get("power_m"))
++                if rec.get("march_b_m") is not None or rec.get("march_c_m") is not None:
++                    self.set_marches(guild_id, rec["name"], b=rec.get("march_b_m"), c=rec.get("march_c_m"))
+                 for role in rec.get("roles", []):
+                     self.add_player_role(guild_id, rec["name"], role, create=True)
+                 ok += 1
+--- a/bot.py
++++ b/bot.py
+@@ -510,12 +510,12 @@
+     await interaction.response.send_message(msg[:1900], ephemeral=not public, allowed_mentions=discord.AllowedMentions.none())
+ 
+ 
+-@oil.command(name="batch", description="ADMIN: Add/update many game names, roles, power and optional Discord IDs")
++@oil.command(name="batch", description="ADMIN: Import names, roles, A/B/C marches and optional Discord IDs")
+ @app_commands.describe(players="Paste one player per line (or attach a .txt file)", file="Optional UTF-8 .txt roster for large imports")
+ async def batch(interaction: discord.Interaction, players: str | None = None, file: discord.Attachment | None = None):
+     ensure_admin(interaction)
+     if not players and not file:
+-        raise ValueError("Paste players or attach a .txt file. Format: Name | Lair Hitter | 35.5M | @DiscordUser")
++        raise ValueError("Paste players or attach a .txt file. Format: Name | Role | A | B | C | Discord ID (optional)")
+     await interaction.response.defer(ephemeral=True)
+     payload = players or ""
+     if file:
